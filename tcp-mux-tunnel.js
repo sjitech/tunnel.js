@@ -22,13 +22,13 @@ function main() {
   switch (args[0]) {
     case 'server':
       v = {
-        listenAddress: args[0],
-        listenPort: args[1]
+        listenAddress: args[1],
+        listenPort: args[2]
       };
       console.log('Create mux tunnel server. Using parameters ' + JSON.stringify(v, null, '  '));
 
-      net.createServer({allowHalfOpen: true}, tunnel => {
-        // console.log('incoming from ' + tunnel.remoteAddress + ' ' + tunnel.remotePort);
+      net.createServer({allowHalfOpen: false}, tunnel => {
+        console.log('incoming from ' + tunnel.remoteAddress + ' ' + tunnel.remotePort);
         init_mux_tunnel(tunnel);
 
       }).listen({host: v.listenAddress, port: v.listenPort}, function () {
@@ -89,7 +89,7 @@ function main() {
 function init_mux_tunnel(tunnel) {
   tunnel.virtStreamLastId = 0;
   tunnel.virtStreamMap = {};
-  var tmpBuf = new Buffer();
+  var tmpBuf = Buffer.alloc(0);
   var currentVirtStream;
 
   tunnel.on('data', buf => {
@@ -108,11 +108,12 @@ function init_mux_tunnel(tunnel) {
     } else {
       var pos = buf.indexOf('}');
       if (pos >= 0) {
+        console.log('request: ' + Buffer.concat([tmpBuf, buf.slice(0, pos + 1)]).toString());
         var req = JSON.parse(Buffer.concat([tmpBuf, buf.slice(0, pos + 1)]).toString());
         if (buf.length > pos + 1) {
           tunnel.unshift(buf.slice(pos + 1));
         }
-        tmpBuf = new Buffer();
+        tmpBuf = tmpBuf.slice(0, 0);
         var virtStream;
 
         switch (req.op) {
@@ -120,13 +121,14 @@ function init_mux_tunnel(tunnel) {
             create_forwarder(tunnel, req.fromAddress, req.fromPort, req.toAddress, req.toPort);
             break;
           case 'connect':
-            virtStreamMap[req.virtStreamId] = virtStream = {
+            tunnel.virtStreamMap[req.virtStreamId] = virtStream = {
               realStream: net.connect({host: req.host, port: req.port})
             };
             pipe_stream_to_tunnel(virtStream.realStream, req.virtStreamId, tunnel);
             break;
           default:
-            virtStream = virtStreamMap[req.virtStreamId];
+            console.log(req);
+            virtStream = tunnel.virtStreamMap[req.virtStreamId];
             if (!virtStream) {
               break;
             }
@@ -140,12 +142,12 @@ function init_mux_tunnel(tunnel) {
                 break;
               case 'on close':
                 virtStream.realStream.destroy();
-                delete virtStreamMap[req.virtStreamId];
+                delete tunnel.virtStreamMap[req.virtStreamId];
                 break;
               case 'on error':
                 console.log('Remote error: ' + req.msg);
                 virtStream.realStream.destroy();
-                delete virtStreamMap[req.virtStreamId];
+                delete tunnel.virtStreamMap[req.virtStreamId];
                 break;
               default:
                 console.log('wrong op ' + req.op);
@@ -156,6 +158,11 @@ function init_mux_tunnel(tunnel) {
         tmpBuf = Buffer.concat([tmpBuf, buf]);
       }
     }
+  }).on('close', () => {
+    process.exit(0);
+  }).on('error', e => {
+    console.log(e.message);
+    process.exit(1);
   });
 }
 
