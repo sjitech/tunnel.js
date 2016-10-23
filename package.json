@@ -1,0 +1,25 @@
+{
+  "name": "tunnel.js",
+  "version": "1.0.7",
+  "description": "Create a tunnel for port forwarding/reversing in most restricted network",
+  "bin": {"tunnel.js": "./tunnel.js"},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sjitech/tunnel.js.git"
+  },
+  "keywords": [
+    "tunnel",
+    "port",
+    "forward",
+    "reverse"
+  ],
+  "author": "osexp2000@gmail.com",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/sjitech/tunnel.js/issues"
+  },
+  "homepage": "https://github.com/sjitech/tunnel.js#readme"
+}
