@@ -93,69 +93,75 @@ function init_mux_tunnel(tunnel) {
   var currentVirtStream;
 
   tunnel.on('data', buf => {
-    if (currentVirtStream) {
-      //pipe tunnel incoming data to real stream
-      currentVirtStream.realStream.write(buf.slice(0, currentVirtStream.length));
+    var restBuf = buf;
+    while(restBuf && restBuf.length > 0) {
+      buf = restBuf;
+      restBuf = null;
 
-      if (buf.length > currentVirtStream.length) {
-        tunnel.push(buf.slice(currentVirtStream.length));
-        currentVirtStream = null;
-      } else if (buf.length == currentVirtStream.length) {
-        currentVirtStream = null;
-      } else {
-        currentVirtStream.length -= buf.length;
-      }
-    } else {
-      var pos = buf.indexOf('}');
-      if (pos >= 0) {
-        console.log('[tunnel] ' + Buffer.concat([tmpBuf, buf.slice(0, pos + 1)]).toString());
-        var req = JSON.parse(Buffer.concat([tmpBuf, buf.slice(0, pos + 1)]).toString());
-        if (buf.length > pos + 1) {
-          tunnel.push(buf.slice(pos + 1));
+      if (currentVirtStream) {
+        //pipe tunnel incoming data to real stream
+        currentVirtStream.realStream.write(buf.slice(0, currentVirtStream.length));
+
+        if (buf.length > currentVirtStream.length) {
+          restBuf = buf.slice(currentVirtStream.length);
+          currentVirtStream = null;
+        } else if (buf.length == currentVirtStream.length) {
+          currentVirtStream = null;
+        } else {
+          currentVirtStream.length -= buf.length;
         }
-        tmpBuf = tmpBuf.slice(0, 0);
-        var virtStream;
+      } else {
+        var pos = buf.indexOf('}');
+        if (pos >= 0) {
+          console.log('[tunnel] ' + Buffer.concat([tmpBuf, buf.slice(0, pos + 1)]).toString());
+          var req = JSON.parse(Buffer.concat([tmpBuf, buf.slice(0, pos + 1)]).toString());
+          if (buf.length > pos + 1) {
+            restBuf = buf.slice(pos + 1);
+          }
+          tmpBuf = tmpBuf.slice(0, 0);
+          var virtStream;
 
-        switch (req.op) {
-          case 'reverse':
-            create_forwarder(tunnel, req.fromAddress, req.fromPort, req.toAddress, req.toPort);
-            break;
-          case 'connect':
-            tunnel.virtStreamMap[req.virtStreamId] = virtStream = {
-              realStream: net.connect({host: req.host, port: req.port})
-            };
-            pipe_stream_to_tunnel(virtStream.realStream, req.virtStreamId, tunnel);
-            break;
-          default:
-            //console.log(req);
-            virtStream = tunnel.virtStreamMap[req.virtStreamId];
-            if (!virtStream) {
+          switch (req.op) {
+            case 'reverse':
+              create_forwarder(tunnel, req.fromAddress, req.fromPort, req.toAddress, req.toPort);
               break;
-            }
-            switch (req.op) {
-              case 'on data':
-                virtStream.length = req.length;
-                currentVirtStream = virtStream;
+            case 'connect':
+              tunnel.virtStreamMap[req.virtStreamId] = virtStream = {
+                realStream: net.connect({host: req.host, port: req.port})
+              };
+              pipe_stream_to_tunnel(virtStream.realStream, req.virtStreamId, tunnel);
+              break;
+            default:
+              //console.log(req);
+              virtStream = tunnel.virtStreamMap[req.virtStreamId];
+              if (!virtStream) {
                 break;
-              case 'on end':
-                virtStream.realStream.end();
-                break;
-              case 'on close':
-                virtStream.realStream.destroy();
-                delete tunnel.virtStreamMap[req.virtStreamId];
-                break;
-              case 'on error':
-                console.log('Remote error: ' + req.msg);
-                virtStream.realStream.destroy();
-                //delete tunnel.virtStreamMap[req.virtStreamId];
-                break;
-              default:
-                console.log('wrong op ' + req.op);
-                process.exit(1);
-            }
+              }
+              switch (req.op) {
+                case 'on data':
+                  virtStream.length = req.length;
+                  currentVirtStream = virtStream;
+                  break;
+                case 'on end':
+                  virtStream.realStream.end();
+                  break;
+                case 'on close':
+                  virtStream.realStream.destroy();
+                  delete tunnel.virtStreamMap[req.virtStreamId];
+                  break;
+                case 'on error':
+                  console.log('Remote error: ' + req.msg);
+                  virtStream.realStream.destroy();
+                  //delete tunnel.virtStreamMap[req.virtStreamId];
+                  break;
+                default:
+                  console.log('wrong op ' + req.op);
+                  process.exit(1);
+              }
+          }
+        } else {
+          tmpBuf = Buffer.concat([tmpBuf, buf]);
         }
-      } else {
-        tmpBuf = Buffer.concat([tmpBuf, buf]);
       }
     }
   }).on('close', () => {
