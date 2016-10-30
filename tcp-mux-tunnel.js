@@ -14,6 +14,17 @@ function show_usage() {
   process.exit(1);
 }
 
+const TUNNEL_CLIENT = 'C';
+const TUNNEL_SERVER = 'S';
+
+const EVENT_STREAM_ON_CREATE = '+';
+const EVENT_STREAM_ON_CLOSE = '-';
+const EVENT_STREAM_ON_DATA = ':';
+const EVENT_STREAM_ON_END = '!';
+const EVENT_FORWARDER_LISTENER_ON_CREATE= 'L+';
+const EVENT_FORWARDER_LISTENER_ON_CLOSE = 'L-';
+const EVENT_REQ_REVERSE= '';
+
 function main() {
   //nodejs args is start from the 3rd.
   var args = process.argv.slice(2);
@@ -29,7 +40,7 @@ function main() {
 
       net.createServer({allowHalfOpen: false}, tunnel => {
         console.log('incoming from ' + tunnel.remoteAddress + ' ' + tunnel.remotePort);
-        init_mux_tunnel(tunnel);
+        init_mux_tunnel(tunnel, TUNNEL_SERVER);
 
       }).listen({host: v.listenAddress, port: v.listenPort}, function () {
         console.log('Listening TCP ' + this.address().port + ' of ' + this.address().address);
@@ -59,21 +70,14 @@ function main() {
 
       var tunnel = net.connect({host: v.serverAddress, port: v.serverPort}, () => {
         console.log('Connected to ' + tunnel.remoteAddress + ' TCP ' + tunnel.remotePort);
-
-        init_mux_tunnel(tunnel);
+        init_mux_tunnel(tunnel, TUNNEL_CLIENT);
 
         switch (args[3]) {
           case 'forward':
             create_forwarder(tunnel, v.fromAddress, v.fromPort, v.toAddress, v.toPort);
             break;
           case 'reverse':
-            tunnel.write(JSON.stringify({
-              op: 'reverse',
-              fromAddress: v.fromAddress,
-              fromPort: v.fromPort,
-              toAddress: v.toAddress,
-              toPort: v.toPort
-            }));
+            tunnel.write(`,${v.fromAddress},${v.fromPort},${v.toAddress},${v.toPort}\0`);
             break;
         }
       }).on('error', (e) => {
@@ -86,145 +90,156 @@ function main() {
   }
 }
 
-function init_mux_tunnel(tunnel) {
-  tunnel.virtStreamLastId = 0;
-  tunnel.virtStreamMap = {};
-  var tmpBuf = Buffer.alloc(0);
-  var currentVirtStream;
+function init_mux_tunnel(tunnel, side) {
+  tunnel._side = side;
+  tunnel.forwarderIdMax = 0;
+  tunnel._streamIdMax = 0;
+  tunnel._streamMap = {/*key is streamId*/};
+  tunnel._targetMap = {/*key is forwarderId*/};
+  tunnel._listenerMap = {/*key is forwarderId*/};
+  var eventBuf = Buffer.alloc(0);
+  var currentStream;
 
   tunnel.on('data', buf => {
     var restBuf = buf;
-    while(restBuf && restBuf.length > 0) {
+    while (restBuf && restBuf.length > 0) {
       buf = restBuf;
       restBuf = null;
 
-      if (currentVirtStream) {
+      if (currentStream) {
         //pipe tunnel incoming data to real stream
-        currentVirtStream.realStream.write(buf.slice(0, currentVirtStream.length));
+        currentStream.write(buf.slice(0, currentStream._restLenOfDataToRead));
 
-        if (buf.length > currentVirtStream.length) {
-          restBuf = buf.slice(currentVirtStream.length);
-          currentVirtStream = null;
-        } else if (buf.length == currentVirtStream.length) {
-          currentVirtStream = null;
+        if (buf.length >= currentStream._restLenOfDataToRead) {
+          restBuf = buf.slice(currentStream._restLenOfDataToRead);
+          currentStream._restLenOfDataToRead = 0;
+          currentStream = null;
         } else {
-          currentVirtStream.length -= buf.length;
+          currentStream._restLenOfDataToRead -= buf.length;
         }
       } else {
-        var pos = buf.indexOf('}');
+        var pos = buf.indexOf(0);
         if (pos >= 0) {
-          console.log('[tunnel] ' + Buffer.concat([tmpBuf, buf.slice(0, pos + 1)]).toString());
-          var req = JSON.parse(Buffer.concat([tmpBuf, buf.slice(0, pos + 1)]).toString());
+          console.log('[tunnel] ' + Buffer.concat([eventBuf, buf.slice(0, pos + 1)]).toString());
+          var event;
+          try {
+            event = JSON.parse(Buffer.concat([eventBuf, buf.slice(0, pos + 1)]).toString());
+          } catch (e) {
+            console.log('failed to parse event. ' + e.message);
+            tunnel.destroy();
+            break;
+          }
           if (buf.length > pos + 1) {
             restBuf = buf.slice(pos + 1);
           }
-          tmpBuf = tmpBuf.slice(0, 0);
-          var virtStream;
+          eventBuf = eventBuf.slice(0, 0);
+          var stream;
 
-          switch (req.op) {
-            case 'reverse':
-              create_forwarder(tunnel, req.fromAddress, req.fromPort, req.toAddress, req.toPort);
-              break;
-            case 'connect':
-              tunnel.virtStreamMap[req.virtStreamId] = virtStream = {
-                realStream: net.connect({host: req.host, port: req.port})
+          switch (event[0]) {
+            case EVENT_FORWARDER_LISTENER_ON_CREATE:
+              tunnel.forwarderMap[event[1].forwarderId] = {
+                toAddress: event[1].toAddress,
+                toPort: event[1].toPort
               };
-              pipe_stream_to_tunnel(virtStream.realStream, req.virtStreamId, tunnel);
+              break;
+            case EVENT_FORWARDER_LISTENER_ON_CLOSE:
+              delete tunnel.forwarderMap[event[1].forwarderId];
+              break;
+            case EVENT_REQ_REVERSE:
+              create_forwarder(tunnel, event[1].fromAddress, event[1].fromPort, event[1].toAddress, event[1].toPort);
+              break;
+            case EVENT_STREAM_ON_CREATE:
+              tunnel.streamMap[event[1]] = stream = {
+                realStream: net.connect(tunnel.forwarderMap[event[2]])
+              };
+              pipe_stream_to_tunnel(stream.realStream, event[1], tunnel);
               break;
             default:
-              //console.log(req);
-              virtStream = tunnel.virtStreamMap[req.virtStreamId];
-              if (!virtStream) {
+              stream = tunnel.streamMap[event.streamId];
+              if (!stream) {
                 break;
               }
-              switch (req.op) {
-                case 'on data':
-                  virtStream.length = req.length;
-                  currentVirtStream = virtStream;
+              switch (event[0]) {
+                case 'data':
+                  stream.length = event.length;
+                  currentStream = stream;
                   break;
-                case 'on end':
-                  virtStream.realStream.end();
+                case 'end':
+                  stream.realStream.end();
                   break;
-                case 'on close':
-                  virtStream.realStream.destroy();
-                  delete tunnel.virtStreamMap[req.virtStreamId];
-                  break;
-                case 'on error':
-                  console.log('Remote error: ' + req.msg);
-                  virtStream.realStream.destroy();
-                  //delete tunnel.virtStreamMap[req.virtStreamId];
+                case 'close':
+                  stream.realStream.destroy();
+                  delete tunnel.streamMap[event.streamId];
                   break;
                 default:
-                  console.log('wrong op ' + req.op);
-                  process.exit(1);
+                  console.log('wrong event name ' + event[0]);
+                  tunnel.destroy();
               }
           }
         } else {
-          tmpBuf = Buffer.concat([tmpBuf, buf]);
+          eventBuf = Buffer.concat([eventBuf, buf]);
         }
       }
     }
   }).on('close', () => {
-    process.exit(0);
+    if(side == TUNNEL_SERVER) {
+      for (var streamId in tunnel._streamMap) {
+        tunnel._streamMap[streamId].destroy();
+        tunnel._streamMap = {};
+      }
+      for (var listenerId in tunnel._listenerMap) {
+        tunnel._listenerMap[listenerId].close();
+        tunnel._listenerMap = {};
+      }
+      tunnel._targetMap = {};
+    } else {
+      process.exit(0);
+    }
   }).on('error', e => {
     console.log(e.message);
-    process.exit(1);
   });
 }
 
 function create_forwarder(tunnel, fromAddress, fromPort, toAddress, toPort) {
+  var forwarderId = tunnel._side + '/' + (++tunnel.forwarderIdMax).toString(16);
   net.createServer({allowHalfOpen: true}, realStream => {
-    var virtStreamId = ++tunnel.virtStreamLastId;
+    var streamId = forwarderId+'#'+(++tunnel.streamIdMax).toString(16);
+    
+    tunnel.write(`${streamId},+\0`);
 
-    tunnel.write(JSON.stringify({
-      op: 'connect',
-      virtStreamId: virtStreamId,
-      host: toAddress,
-      port: toPort
-    }));
+    tunnel.streamMap[streamId] = realStream;
 
-    tunnel.virtStreamMap[virtStreamId] = {
-      realStream: realStream
-    };
-
-    pipe_stream_to_tunnel(realStream, virtStreamId, tunnel);
+    pipe_stream_to_tunnel(realStream, streamId, tunnel);
 
   }).listen({host: fromAddress, port: fromPort}, function () {
     console.log('[Forwarder] Listening TCP ' + this.address().port + ' of ' + this.address().address);
+    tunnel._listenerMap[forwarderId] = this;
+    tunnel.write(`${forwarderId},${fromAddress},${fromPort},${toAddress},${toPort}\0`);
+  }).on('error', e => {
+    console.log(e.message);
+  }).on('close', () => {
+    delete tunnel._listenerMap[forwarderId];
+    tunnel.write(`${forwarderId},-\0`);
   });
-
 }
 
-function pipe_stream_to_tunnel(realStream, virtStreamId, tunnel) {
+function pipe_stream_to_tunnel(realStream, streamId, tunnel) {
   realStream
     .on('data', buf => {
-      tunnel.write(JSON.stringify({
-        op: 'on data',
-        virtStreamId: virtStreamId,
-        length: buf.length
-      }));
+      tunnel.cork();
+      tunnel.write(`${streamId},${buf.length}\0`);
       tunnel.write(buf);
+      tunnel.uncork();
     })
     .on('end', () => {
-      tunnel.write(JSON.stringify({
-        op: 'on end',
-        virtStreamId: virtStreamId
-      }));
+      tunnel.write(`${streamId},!\0`);
     })
     .on('close', () => {
-      tunnel.write(JSON.stringify({
-        op: 'on close',
-        virtStreamId: virtStreamId
-      }));
-      delete tunnel.virtStreamMap[virtStreamId];
+      delete tunnel.streamMap[streamId];
+      tunnel.write(`${streamId},-\0`);
     })
     .on('error', e => {
       console.log(e.message);
-      tunnel.write(JSON.stringify({
-        op: 'on error',
-        virtStreamId: virtStreamId,
-        msg: e.message
-      }));
     });
 }
 
