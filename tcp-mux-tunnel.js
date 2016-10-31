@@ -69,7 +69,7 @@ function main() {
             create_forwarder(tunnel, v.fromAddress, v.fromPort, v.toAddress, v.toPort);
             break;
           case 'reverse':
-            tunnel.write(`reverse,${v.fromAddress},${v.fromPort},${v.toAddress},${v.toPort}\0`);
+            tunnel.write(`reverse,${v.fromAddress},${v.fromPort},${v.toAddress},${v.toPort}\n`);
             break;
         }
       }).on('error', (e) => {
@@ -90,6 +90,7 @@ function init_mux_tunnel(tunnel, side) {
   tunnel._listenerMap = {/*key is forwarderId*/};
   var EMPTY_BUF = Buffer.alloc(0);
   var eventBuf = EMPTY_BUF;
+  var EOL_CODE = '\n'.charAt(0);
   var realStream;
 
   tunnel.on('data', buf => {
@@ -110,7 +111,7 @@ function init_mux_tunnel(tunnel, side) {
           realStream._restLenOfDataToRead -= buf.length;
         }
       } else {
-        var pos = buf.indexOf(0);
+        var pos = buf.indexOf(EOL_CODE);
         if (pos >= 0) {
           var event = Buffer.concat([eventBuf, buf.slice(0, pos + 1)]).toString();
           console.log('[tunnel] ' + event);
@@ -149,7 +150,7 @@ function init_mux_tunnel(tunnel, side) {
               pipe_stream_to_tunnel(realStream, streamId, tunnel);
             }
             else if ((realStream = tunnel._streamMap[streamId])) {
-              if (eventType === '<') {
+              if (eventType === ':') {
                 realStream._restLenOfDataToRead = Number(event[2]).valueOf();
               } else if (eventType === '!') {
                 realStream.end();
@@ -193,17 +194,17 @@ function create_forwarder(tunnel, fromAddress, fromPort, toAddress, toPort) {
     var streamId = forwarderId + '#' + (++streamIdMax).toString(16);
     tunnel._streamMap[streamId] = realStream;
 
-    tunnel.write(`${streamId},+\0`);
+    tunnel.write(`${streamId},+\n`);
 
     pipe_stream_to_tunnel(realStream, streamId, tunnel);
 
   }).listen({host: fromAddress, port: fromPort}, function () {
     console.log('[Forwarder] Listening TCP ' + this.address().port + ' of ' + this.address().address);
     tunnel._listenerMap[forwarderId] = this;
-    tunnel.write(`${forwarderId},+,${fromAddress},${fromPort},${toAddress},${toPort}\0`);
+    tunnel.write(`${forwarderId},+,${fromAddress},${fromPort},${toAddress},${toPort}\n`);
   }).on('close', () => {
     delete tunnel._listenerMap[forwarderId];
-    tunnel.write(`${forwarderId},-\0`);
+    tunnel.write(`${forwarderId},-\n`);
   }).on('error', e => {
     console.log(e.message);
   });
@@ -213,16 +214,16 @@ function pipe_stream_to_tunnel(realStream, streamId, tunnel) {
   realStream
     .on('data', buf => {
       tunnel.cork();
-      tunnel.write(`${streamId},<,${buf.length}\0`);
+      tunnel.write(`${streamId},:,${buf.length}\n`);
       tunnel.write(buf);
       tunnel.uncork();
     })
     .on('end', () => {
-      tunnel.write(`${streamId},.\0`);
+      tunnel.write(`${streamId},!\n`);
     })
     .on('close', () => {
       delete tunnel._streamMap[streamId];
-      tunnel.write(`${streamId},-\0`);
+      tunnel.write(`${streamId},-\n`);
     })
     .on('error', e => {
       console.log(e.message);
