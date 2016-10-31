@@ -17,14 +17,6 @@ function show_usage() {
 const TUNNEL_CLIENT = 'C';
 const TUNNEL_SERVER = 'S';
 
-const EVENT_STREAM_ON_CREATE = '+';
-const EVENT_STREAM_ON_CLOSE = '-';
-const EVENT_STREAM_ON_DATA = ':';
-const EVENT_STREAM_ON_END = '!';
-const EVENT_FORWARDER_LISTENER_ON_CREATE= 'L+';
-const EVENT_FORWARDER_LISTENER_ON_CLOSE = 'L-';
-const EVENT_REQ_REVERSE= '';
-
 function main() {
   //nodejs args is start from the 3rd.
   var args = process.argv.slice(2);
@@ -77,7 +69,7 @@ function main() {
             create_forwarder(tunnel, v.fromAddress, v.fromPort, v.toAddress, v.toPort);
             break;
           case 'reverse':
-            tunnel.write(`,${v.fromAddress},${v.fromPort},${v.toAddress},${v.toPort}\0`);
+            tunnel.write(`reverse,${v.fromAddress},${v.fromPort},${v.toAddress},${v.toPort}\0`);
             break;
         }
       }).on('error', (e) => {
@@ -92,13 +84,13 @@ function main() {
 
 function init_mux_tunnel(tunnel, side) {
   tunnel._side = side;
-  tunnel.forwarderIdMax = 0;
-  tunnel._streamIdMax = 0;
+  tunnel._forwarderIdMax = 0;
   tunnel._streamMap = {/*key is streamId*/};
   tunnel._targetMap = {/*key is forwarderId*/};
   tunnel._listenerMap = {/*key is forwarderId*/};
-  var eventBuf = Buffer.alloc(0);
-  var currentStream;
+  var EMPTY_BUF = Buffer.alloc(0);
+  var eventBuf = EMPTY_BUF;
+  var realStream;
 
   tunnel.on('data', buf => {
     var restBuf = buf;
@@ -106,75 +98,69 @@ function init_mux_tunnel(tunnel, side) {
       buf = restBuf;
       restBuf = null;
 
-      if (currentStream) {
+      if (realStream && realStream._restLenOfDataToRead > 0) {
         //pipe tunnel incoming data to real stream
-        currentStream.write(buf.slice(0, currentStream._restLenOfDataToRead));
+        realStream.write(buf.slice(0, realStream._restLenOfDataToRead));
 
-        if (buf.length >= currentStream._restLenOfDataToRead) {
-          restBuf = buf.slice(currentStream._restLenOfDataToRead);
-          currentStream._restLenOfDataToRead = 0;
-          currentStream = null;
+        if (buf.length >= realStream._restLenOfDataToRead) {
+          restBuf = buf.slice(realStream._restLenOfDataToRead);
+          realStream._restLenOfDataToRead = 0;
+          realStream = null;
         } else {
-          currentStream._restLenOfDataToRead -= buf.length;
+          realStream._restLenOfDataToRead -= buf.length;
         }
       } else {
         var pos = buf.indexOf(0);
         if (pos >= 0) {
-          console.log('[tunnel] ' + Buffer.concat([eventBuf, buf.slice(0, pos + 1)]).toString());
-          var event;
-          try {
-            event = JSON.parse(Buffer.concat([eventBuf, buf.slice(0, pos + 1)]).toString());
-          } catch (e) {
-            console.log('failed to parse event. ' + e.message);
-            tunnel.destroy();
-            break;
-          }
+          var event = Buffer.concat([eventBuf, buf.slice(0, pos + 1)]).toString();
+          console.log('[tunnel] ' + event);
+          event = event.split(',');
+
           if (buf.length > pos + 1) {
             restBuf = buf.slice(pos + 1);
           }
-          eventBuf = eventBuf.slice(0, 0);
-          var stream;
+          eventBuf = EMPTY_BUF;
 
-          switch (event[0]) {
-            case EVENT_FORWARDER_LISTENER_ON_CREATE:
-              tunnel.forwarderMap[event[1].forwarderId] = {
-                toAddress: event[1].toAddress,
-                toPort: event[1].toPort
-              };
-              break;
-            case EVENT_FORWARDER_LISTENER_ON_CLOSE:
-              delete tunnel.forwarderMap[event[1].forwarderId];
-              break;
-            case EVENT_REQ_REVERSE:
-              create_forwarder(tunnel, event[1].fromAddress, event[1].fromPort, event[1].toAddress, event[1].toPort);
-              break;
-            case EVENT_STREAM_ON_CREATE:
-              tunnel.streamMap[event[1]] = stream = {
-                realStream: net.connect(tunnel.forwarderMap[event[2]])
-              };
-              pipe_stream_to_tunnel(stream.realStream, event[1], tunnel);
-              break;
-            default:
-              stream = tunnel.streamMap[event.streamId];
-              if (!stream) {
-                break;
+          if (event[0] === 'reverse') {
+            create_forwarder(tunnel, event[1], event[2], event[3], event[4]);
+          }
+          else {
+            var streamId = event[0];
+            var forwarderId = streamId.split('#')[0];
+            var eventType = event[1];
+
+            if (streamId === forwarderId) {
+              if (eventType === '+') {
+                tunnel._targetMap[forwarderId] = {
+                  fromAddress: event[2],
+                  fromPort: event[3],
+                  toAddress: event[4],
+                  toPort: event[5]
+                };
+              } else if (eventType === '-') {
+                delete tunnel._targetMap[forwarderId];
               }
-              switch (event[0]) {
-                case 'data':
-                  stream.length = event.length;
-                  currentStream = stream;
-                  break;
-                case 'end':
-                  stream.realStream.end();
-                  break;
-                case 'close':
-                  stream.realStream.destroy();
-                  delete tunnel.streamMap[event.streamId];
-                  break;
-                default:
-                  console.log('wrong event name ' + event[0]);
-                  tunnel.destroy();
+            }
+            else if (eventType === '+') {
+              tunnel._streamMap[streamId] = realStream = net.connect({
+                host: tunnel._targetMap[forwarderId].toAddress,
+                port: tunnel._targetMap[forwarderId].toPort
+              });
+              pipe_stream_to_tunnel(realStream, streamId, tunnel);
+            }
+            else if ((realStream = tunnel._streamMap[streamId])) {
+              if (eventType === '<') {
+                realStream._restLenOfDataToRead = Number(event[2]).valueOf();
+              } else if (eventType === '!') {
+                realStream.end();
+              } else if (eventType === '-') {
+                realStream.destroy();
+                delete tunnel._streamMap[streamId];
+              } else {
+                console.log('wrong event type ' + eventType);
+                tunnel.destroy();
               }
+            }
           }
         } else {
           eventBuf = Buffer.concat([eventBuf, buf]);
@@ -182,7 +168,7 @@ function init_mux_tunnel(tunnel, side) {
       }
     }
   }).on('close', () => {
-    if(side == TUNNEL_SERVER) {
+    if (side == TUNNEL_SERVER) {
       for (var streamId in tunnel._streamMap) {
         tunnel._streamMap[streamId].destroy();
         tunnel._streamMap = {};
@@ -201,25 +187,25 @@ function init_mux_tunnel(tunnel, side) {
 }
 
 function create_forwarder(tunnel, fromAddress, fromPort, toAddress, toPort) {
-  var forwarderId = tunnel._side + '/' + (++tunnel.forwarderIdMax).toString(16);
+  var forwarderId = tunnel._side + '/' + (++tunnel._forwarderIdMax).toString(16);
+  var streamIdMax = 0;
   net.createServer({allowHalfOpen: true}, realStream => {
-    var streamId = forwarderId+'#'+(++tunnel.streamIdMax).toString(16);
-    
-    tunnel.write(`${streamId},+\0`);
+    var streamId = forwarderId + '#' + (++streamIdMax).toString(16);
+    tunnel._streamMap[streamId] = realStream;
 
-    tunnel.streamMap[streamId] = realStream;
+    tunnel.write(`${streamId},+\0`);
 
     pipe_stream_to_tunnel(realStream, streamId, tunnel);
 
   }).listen({host: fromAddress, port: fromPort}, function () {
     console.log('[Forwarder] Listening TCP ' + this.address().port + ' of ' + this.address().address);
     tunnel._listenerMap[forwarderId] = this;
-    tunnel.write(`${forwarderId},${fromAddress},${fromPort},${toAddress},${toPort}\0`);
-  }).on('error', e => {
-    console.log(e.message);
+    tunnel.write(`${forwarderId},+,${fromAddress},${fromPort},${toAddress},${toPort}\0`);
   }).on('close', () => {
     delete tunnel._listenerMap[forwarderId];
     tunnel.write(`${forwarderId},-\0`);
+  }).on('error', e => {
+    console.log(e.message);
   });
 }
 
@@ -227,15 +213,15 @@ function pipe_stream_to_tunnel(realStream, streamId, tunnel) {
   realStream
     .on('data', buf => {
       tunnel.cork();
-      tunnel.write(`${streamId},${buf.length}\0`);
+      tunnel.write(`${streamId},<,${buf.length}\0`);
       tunnel.write(buf);
       tunnel.uncork();
     })
     .on('end', () => {
-      tunnel.write(`${streamId},!\0`);
+      tunnel.write(`${streamId},.\0`);
     })
     .on('close', () => {
-      delete tunnel.streamMap[streamId];
+      delete tunnel._streamMap[streamId];
       tunnel.write(`${streamId},-\0`);
     })
     .on('error', e => {
