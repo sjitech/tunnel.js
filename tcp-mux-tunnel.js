@@ -66,7 +66,7 @@ function main() {
 
         switch (args[3]) {
           case 'forward':
-            create_forwarder(tunnel, v.fromAddress, v.fromPort, v.toAddress, v.toPort);
+            create_forwarder_listener(tunnel, v.fromAddress, v.fromPort, v.toAddress, v.toPort);
             break;
           case 'reverse':
             tunnel.write(`\treverse\t${v.fromAddress}\t${v.fromPort}\t${v.toAddress}\t${v.toPort}\n`);
@@ -99,7 +99,7 @@ function init_mux_tunnel(tunnel, side) {
         buf = restBuf;
         restBuf = null;
 
-        if (curRealStream && curRealStream._restLenOfDataToRead > 0) {
+        if (curRealStream) {
           //pipe tunnel incoming data to real stream
           curRealStream.write(buf.slice(0, curRealStream._restLenOfDataToRead));
 
@@ -113,7 +113,7 @@ function init_mux_tunnel(tunnel, side) {
         } else {
           var pos = buf.indexOf(EOF_CODE);
           if (pos >= 0) {
-            var event = Buffer.concat([eventBuf, buf.slice(0, pos + 1)]).toString();
+            var event = Buffer.concat([eventBuf, buf.slice(0, pos)]).toString();
             if (buf.length > pos + 1) {
               restBuf = buf.slice(pos + 1);
             }
@@ -122,77 +122,85 @@ function init_mux_tunnel(tunnel, side) {
             console.log('[tunnel] ' + event);
             event = event.split('\t');
             var streamId = event[0];
-            var forwarderId = streamId.split('#')[0];
-            var eventType = event[1];
+            var eventName = event[1];
 
-            if (!streamId) { //internal commands from peer
-              if (eventType === 'reverse') {
-                create_forwarder(tunnel, event[2], event[3], event[4], event[5]);
-              } else {
-                console.log('invalid event type ' + event[1]);
-                tunnel.destroy();
-                return;
-              }
-            }
-            else if (streamId === forwarderId) { //forwarder listener events from peer
-              if (eventType === '+') { //on listening
-                tunnel._targetMap[forwarderId] = {
-                  fromAddress: event[2],
-                  fromPort: event[3],
-                  toAddress: event[4],
-                  toPort: event[5]
-                };
-              } else if (eventType === '-') { //on close
-                delete tunnel._targetMap[forwarderId];
-              } else {
-                console.log('invalid event type ' + event[1]);
-                tunnel.destroy();
-                return;
-              }
-            }
-            else { //forwarder stream events from peer
-              var realStream;
-              if (eventType === '+') { //on connect
-                try {
-                  realStream = net.connect({
-                    host: tunnel._targetMap[forwarderId].toAddress,
-                    port: tunnel._targetMap[forwarderId].toPort
-                  });
-                } catch (e) {
-                  console.log('failed to connect. ' + e.message);
+            if (streamId) {
+              var forwarderId = streamId.split('#')[0];
+
+              if (streamId === forwarderId) { //listener events from peer
+                if (eventName === '+') { //on listening
+                  tunnel._targetMap[forwarderId] = {
+                    peer: {
+                      address: event[2], //just as info
+                      port: event[3], //just as info
+                    },
+                    toAddress: event[4],
+                    toPort: event[5]
+                  };
+                } else if (eventName === '-') { //on close
+                  delete tunnel._targetMap[forwarderId];
+                } else {
+                  console.log('invalid event name ' + event[1]);
                   tunnel.destroy();
                   return;
                 }
-                tunnel._streamMap[streamId] = realStream;
-                pipe_stream_to_tunnel(realStream, streamId, tunnel);
               }
-              else if (eventType === ':') { //on data
-                var len;
-                try {
-                  len = parseInt(event[2], 16);
-                } catch (e) {
-                  console.log('invalid data length. ' + e.message);
+              else { //stream events from peer
+                var realStream = null;
+                if (eventName === '+') { //on connect
+                  try {
+                    realStream = net.connect({
+                      host: tunnel._targetMap[forwarderId].toAddress,
+                      port: tunnel._targetMap[forwarderId].toPort
+                    });
+                  } catch (e) {
+                    console.log('failed to connect. ' + e.message);
+                  }
+                  if (realStream) {
+                    tunnel._streamMap[streamId] = realStream;
+                    pipe_stream_to_tunnel(realStream, streamId, tunnel);
+                  } else {
+                    tunnel.write(`${streamId}\t-\n`);
+                  }
+                }
+                else if (eventName === ':') { //on data
+                  var len;
+                  try {
+                    len = parseInt(event[2], 16);
+                  } catch (e) {
+                    console.log('invalid data length. ' + e.message);
+                    tunnel.destroy();
+                    return;
+                  }
+                  realStream = tunnel._streamMap[streamId];
+                  if (realStream && len > 0) {
+                    realStream._restLenOfDataToRead = len;
+                    curRealStream = realStream;
+                  }
+                } else if (eventName === '!') { //on end
+                  realStream = tunnel._streamMap[streamId];
+                  if (realStream) {
+                    realStream.end();
+                  }
+                }
+                else if (eventName === '-') { //on close
+                  realStream = tunnel._streamMap[streamId];
+                  if (realStream) {
+                    realStream.destroy();
+                    delete tunnel._streamMap[streamId];
+                  }
+                } else {
+                  console.log('invalid event name: ' + eventName);
                   tunnel.destroy();
                   return;
                 }
-                realStream = tunnel._streamMap[streamId];
-                if (realStream && len > 0) {
-                  realStream._restLenOfDataToRead = len;
-                  curRealStream = realStream;
-                }
-              } else if (eventType === '!') { //on end
-                realStream = tunnel._streamMap[streamId];
-                if (realStream) {
-                  realStream.end();
-                }
-              } else if (eventType === '-') { //on close
-                realStream = tunnel._streamMap[streamId];
-                if (realStream) {
-                  realStream.destroy();
-                  delete tunnel._streamMap[streamId];
-                }
+              }
+            }
+            else { //internal commands
+              if (eventName === 'reverse') {
+                create_forwarder_listener(tunnel, event[2], event[3], event[4], event[5]);
               } else {
-                console.log('invalid event type: ' + eventType);
+                console.log('invalid event name ' + event[1]);
                 tunnel.destroy();
                 return;
               }
@@ -210,8 +218,8 @@ function init_mux_tunnel(tunnel, side) {
         tunnel._streamMap[streamId].destroy();
         tunnel._streamMap = {};
       }
-      for (var listenerId in tunnel._listenerMap) {
-        tunnel._listenerMap[listenerId].close();
+      for (var forwarderId in tunnel._listenerMap) {
+        tunnel._listenerMap[forwarderId].listener.close();
         tunnel._listenerMap = {};
       }
       tunnel._targetMap = {};
@@ -223,9 +231,10 @@ function init_mux_tunnel(tunnel, side) {
   });
 }
 
-function create_forwarder(tunnel, fromAddress, fromPort, toAddress, toPort) {
+function create_forwarder_listener(tunnel, fromAddress, fromPort, toAddress, toPort) {
   var forwarderId = tunnel._side + '/' + (++tunnel._forwarderIdMax).toString(16);
   var streamIdMax = 0;
+
   net.createServer({allowHalfOpen: true}, realStream => {
     var streamId = forwarderId + '#' + (++streamIdMax).toString(16);
     tunnel._streamMap[streamId] = realStream;
@@ -236,7 +245,15 @@ function create_forwarder(tunnel, fromAddress, fromPort, toAddress, toPort) {
 
   }).listen({host: fromAddress, port: fromPort}, function () {
     console.log('[Forwarder] Listening TCP ' + this.address().port + ' of ' + this.address().address);
-    tunnel._listenerMap[forwarderId] = this;
+    tunnel._listenerMap[forwarderId] = {
+      listener: this,
+      address: fromAddress,
+      port: fromPort,
+      peer: {
+        toAddress: toAddress,
+        toPort: toPort
+      }
+    };
     tunnel.write(`${forwarderId}\t+\t${fromAddress},${fromPort},${toAddress},${toPort}\n`);
 
   }).on('close', () => {
