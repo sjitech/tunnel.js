@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-var net = require("net");
+const net = require("net");
 
 function show_usage() {
   console.log('Create a single connection as mux tunnel, so you can pipe multiple connections between local and remotes, even in a restricted network.');
@@ -19,8 +19,8 @@ const TUNNEL_SERVER = 'S';
 
 function main() {
   //nodejs args is start from the 3rd.
-  var args = process.argv.slice(2);
-  var v;
+  const args = process.argv.slice(2);
+  let v;
 
   switch (args[0]) {
     case 'server':
@@ -60,7 +60,7 @@ function main() {
           show_usage();
       }
 
-      var tunnel = net.connect({host: v.serverAddress, port: v.serverPort}, () => {
+      const tunnel = net.connect({host: v.serverAddress, port: v.serverPort}, () => {
         console.log('Connected to ' + tunnel.remoteAddress + ' TCP ' + tunnel.remotePort);
         init_mux_tunnel(tunnel, TUNNEL_CLIENT);
 
@@ -88,13 +88,13 @@ function init_mux_tunnel(tunnel, side) {
   tunnel._streamMap = {/*key is streamId*/};
   tunnel._targetMap = {/*key is forwarderId*/};
   tunnel._listenerMap = {/*key is forwarderId*/};
-  var EMPTY_BUF = Buffer.alloc(0);
-  var eventBuf = EMPTY_BUF;
-  var EOF_CODE = '\n'.charAt(0);
-  var curRealStream;
+  const EMPTY_BUF = Buffer.alloc(0);
+  let eventBuf = EMPTY_BUF;
+  const EOF_CODE = '\n'.charAt(0);
+  let curRealStream;
 
   tunnel.on('data', buf => {
-      var restBuf = buf;
+      let restBuf = buf;
       while (restBuf && restBuf.length > 0) {
         buf = restBuf;
         restBuf = null;
@@ -111,21 +111,21 @@ function init_mux_tunnel(tunnel, side) {
             curRealStream._restLenOfDataToRead -= buf.length;
           }
         } else {
-          var pos = buf.indexOf(EOF_CODE);
+          const pos = buf.indexOf(EOF_CODE);
           if (pos >= 0) {
-            var event = Buffer.concat([eventBuf, buf.slice(0, pos)]).toString();
+            let event_s = Buffer.concat([eventBuf, buf.slice(0, pos)]).toString();
             if (buf.length > pos + 1) {
               restBuf = buf.slice(pos + 1);
             }
             eventBuf = EMPTY_BUF;
 
-            console.log('[tunnel] ' + event);
-            event = event.split('\t');
-            var streamId = event[0];
-            var eventName = event[1];
+            console.log('[tunnel] ' + event_s);
+            const event = event_s.split('\t');
+            const streamId = event[0];
+            const eventName = event[1];
 
             if (streamId) {
-              var forwarderId = streamId.split('#')[0];
+              const forwarderId = streamId.split('#')[0];
 
               if (streamId === forwarderId) { //listener events from peer
                 if (eventName === '+') { //on listening
@@ -146,7 +146,7 @@ function init_mux_tunnel(tunnel, side) {
                 }
               }
               else { //stream events from peer
-                var realStream = null;
+                let realStream = null;
                 if (eventName === '+') { //on connect
                   try {
                     realStream = net.connect({
@@ -164,7 +164,7 @@ function init_mux_tunnel(tunnel, side) {
                   }
                 }
                 else if (eventName === ':') { //on data
-                  var len;
+                  let len;
                   try {
                     len = parseInt(event[2], 16);
                   } catch (e) {
@@ -214,11 +214,11 @@ function init_mux_tunnel(tunnel, side) {
     }
   ).on('close', () => {
     if (side == TUNNEL_SERVER) {
-      for (var streamId in tunnel._streamMap) {
+      for (let streamId in tunnel._streamMap) {
         tunnel._streamMap[streamId].destroy();
         tunnel._streamMap = {};
       }
-      for (var forwarderId in tunnel._listenerMap) {
+      for (let forwarderId in tunnel._listenerMap) {
         tunnel._listenerMap[forwarderId].listener.close();
         tunnel._listenerMap = {};
       }
@@ -232,11 +232,11 @@ function init_mux_tunnel(tunnel, side) {
 }
 
 function create_forwarder_listener(tunnel, fromAddress, fromPort, toAddress, toPort) {
-  var forwarderId = tunnel._side + '/' + (++tunnel._forwarderIdMax).toString(16);
-  var streamIdMax = 0;
+  const forwarderId = tunnel._side + '/' + (++tunnel._forwarderIdMax).toString(16);
+  let streamIdMax = 0;
 
   net.createServer({allowHalfOpen: true}, realStream => {
-    var streamId = forwarderId + '#' + (++streamIdMax).toString(16);
+    const streamId = forwarderId + '#' + (++streamIdMax).toString(16);
     tunnel._streamMap[streamId] = realStream;
 
     tunnel.write(`${streamId}\t+\n`);
@@ -286,3 +286,7 @@ function pipe_stream_to_tunnel(realStream, streamId, tunnel) {
 }
 
 main();
+
+if (!process) { //just to prevent JSLint error
+  console.log({remoteAddress: "", remotePort: 8080, cork: Function, uncork: Function, alloc: Function});
+}
