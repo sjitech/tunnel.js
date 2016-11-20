@@ -6,11 +6,17 @@ const net = require("net");
 function show_usage() {
   console.log('Create a single connection as mux tunnel, so you can pipe multiple connections between local and remotes, even in a restricted network.');
   console.log('Usage:');
-  console.log(' tcp-mux-tunnel.js server <listenAddress> <listenPort>');
-  console.log(' tcp-mux-tunnel.js connect <serverAddress> <serverPort> forward <fromAddress>   <fromPort>   <toAddress_R> <toPort_R>');
-  console.log(' tcp-mux-tunnel.js connect <serverAddress> <serverPort> reverse <fromAddress_R> <fromPort_R> <toAddress>   <toPort>');
+  console.log(' tcp-mux-tunnel.js listen  <tunnelServerAddress:port>');
+  console.log(' tcp-mux-tunnel.js connect <tunnelServerAddress:port>');
+  console.log('                           [from tunnelClientAddress:port]');
+  console.log('The above two commands will further read Tunnel Commands from input(stdin),');
+  console.log('the Tunnel Commands are:');
+  console.log('  forward   <localAddress:port> <r-remoteAddress:port>');
+  console.log('  reverse <r-localAddress:port>   <remoteAddress:port>');
+  console.log('  close     <localAddress:port>');
+  console.log('  r-close <r-localAddress:port>');
   console.log('Notes:');
-  console.log(' The "_R" suffix means the address and port is in sense of the tunnel server.');
+  console.log(' The "r-" prefix means the address and port is in sense of the tunnel peer.');
   process.exit(1);
 }
 
@@ -23,7 +29,7 @@ function main() {
   let v;
 
   switch (args[0]) {
-    case 'server':
+    case 'listen':
       v = {
         listenAddress: args[1],
         listenPort: args[2]
@@ -31,13 +37,15 @@ function main() {
       console.log('Create mux tunnel server. Using parameters ' + JSON.stringify(v, null, '  '));
 
       net.createServer({allowHalfOpen: false}, tunnel => {
-        console.log('incoming from ' + tunnel.remoteAddress + ' ' + tunnel.remotePort);
+        console.log('[Tunnel] Connected from ' + tunnel.remoteAddress + ':' + tunnel.remotePort);
         init_mux_tunnel(tunnel, TUNNEL_SERVER);
 
       }).listen({host: v.listenAddress, port: v.listenPort}, function () {
-        console.log('Listening TCP ' + this.address().port + ' of ' + this.address().address);
-      }).on('error', (e) => {
-        console.log(e.message)
+        console.log('[TunnelListener] Listening ' + this.address().address + ':' + this.address().port);
+      }).on('error', function(e) {
+        console.log('[TunnelListener] ' + e.message);
+      }).on('close', function () {
+        console.log('[TunnelListener] closed')
       });
       break;
     case 'connect':
@@ -60,21 +68,19 @@ function main() {
           show_usage();
       }
 
-      const tunnel = net.connect({host: v.serverAddress, port: v.serverPort}, () => {
-        console.log('Connected to ' + tunnel.remoteAddress + ' TCP ' + tunnel.remotePort);
-        init_mux_tunnel(tunnel, TUNNEL_CLIENT);
+      console.log('[Tunnel] Connect to ' + v.serverAddress + ':' + v.serverPort);
+      const tunnel = net.connect({host: v.serverAddress, port: v.serverPort});
 
-        switch (args[3]) {
-          case 'forward':
-            create_forwarder_listener(tunnel, v.fromAddress, v.fromPort, v.toAddress, v.toPort);
-            break;
-          case 'reverse':
-            tunnel.write(`\treverse\t${v.fromAddress}\t${v.fromPort}\t${v.toAddress}\t${v.toPort}\n`);
-            break;
-        }
-      }).on('error', (e) => {
-        console.log(e.message)
-      });
+      init_mux_tunnel(tunnel, TUNNEL_CLIENT);
+
+      switch (args[3]) {
+        case 'forward':
+          create_forwarder_listener(tunnel, v.fromAddress, v.fromPort, v.toAddress, v.toPort);
+          break;
+        case 'reverse':
+          tunnel.write(`\treverse\t${v.fromAddress}\t${v.fromPort}\t${v.toAddress}\t${v.toPort}\n`);
+          break;
+      }
 
       break;
     default:
@@ -119,7 +125,7 @@ function init_mux_tunnel(tunnel, side) {
             }
             eventBuf = EMPTY_BUF;
 
-            console.log('[tunnel] ' + event_s);
+            console.log('[Tunnel] ' + event_s);
             const event = event_s.split('\t');
             const streamId = event[0];
             const eventName = event[1];
@@ -213,6 +219,7 @@ function init_mux_tunnel(tunnel, side) {
       }
     }
   ).on('close', () => {
+    console.log('[Tunnel] closed');
     if (side == TUNNEL_SERVER) {
       for (let streamId in tunnel._streamMap) {
         tunnel._streamMap[streamId].destroy();
@@ -227,7 +234,7 @@ function init_mux_tunnel(tunnel, side) {
       process.exit(0);
     }
   }).on('error', e => {
-    console.log(e.message);
+    console.log('[Tunnel] ' + e.message);
   });
 }
 
@@ -236,6 +243,7 @@ function create_forwarder_listener(tunnel, fromAddress, fromPort, toAddress, toP
   let streamIdMax = 0;
 
   net.createServer({allowHalfOpen: true}, realStream => {
+    console.log('[stream] Connected from ' + realStream.remoteAddress + ':' + realStream.remotePort);
     const streamId = forwarderId + '#' + (++streamIdMax).toString(16);
     tunnel._streamMap[streamId] = realStream;
 
@@ -244,7 +252,7 @@ function create_forwarder_listener(tunnel, fromAddress, fromPort, toAddress, toP
     pipe_stream_to_tunnel(realStream, streamId, tunnel);
 
   }).listen({host: fromAddress, port: fromPort}, function () {
-    console.log('[Forwarder] Listening TCP ' + this.address().port + ' of ' + this.address().address);
+    console.log('[ForwarderListener] Listening TCP ' + this.address().port + ' of ' + this.address().address);
     tunnel._listenerMap[forwarderId] = {
       listener: this,
       address: fromAddress,
@@ -257,11 +265,14 @@ function create_forwarder_listener(tunnel, fromAddress, fromPort, toAddress, toP
     tunnel.write(`${forwarderId}\t+\t${fromAddress},${fromPort},${toAddress},${toPort}\n`);
 
   }).on('close', () => {
-    delete tunnel._listenerMap[forwarderId];
-    tunnel.write(`${forwarderId}\t-\n`);
-
-  }).on('error', e => {
-    console.log(e.message);
+    console.log('[ForwarderListener] Closed');
+    if (tunnel._listenerMap[forwarderId]) {
+      delete tunnel._listenerMap[forwarderId];
+      tunnel.write(`${forwarderId}\t-\n`);
+    }
+  }).on('error', function(e) {
+    console.log('[ForwarderListener] ' + e.message);
+    this.close();
   });
 }
 
@@ -274,14 +285,16 @@ function pipe_stream_to_tunnel(realStream, streamId, tunnel) {
       tunnel.uncork();
     })
     .on('end', () => {
+      console.log('[stream] ended');
       tunnel.write(`${streamId}\t!\n`);
     })
     .on('close', () => {
+      console.log('[stream] closed');
       delete tunnel._streamMap[streamId];
       tunnel.write(`${streamId}\t-\n`);
     })
     .on('error', e => {
-      console.log(e.message);
+      console.log('[stream] ' + e.message);
     });
 }
 
