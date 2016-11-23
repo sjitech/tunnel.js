@@ -41,7 +41,7 @@ function main() {
       console.log('Create mux tunnel server. Using parameters ' + JSON.stringify(v, null, '  '));
 
       net.createServer({allowHalfOpen: false}, tunnel => {
-        tunnel._tag = '[Tunnel'+(getTimestampShort()+'] ');
+        tunnel._tag = '[Tunnel' + (getTimestampShort() + '] ');
         console.log(tunnel._tag + 'Connected from ' + tunnel.remoteAddress + ':' + tunnel.remotePort);
 
         init_mux_tunnel(tunnel, TUNNEL_SERVER);
@@ -50,9 +50,13 @@ function main() {
         tunnel.on('close', () => {
           delete tunnelMap[tunnel._tag];
         });
+
+        while (args.length > 0) {
+          run_tunnel_action(tunnel, args);
+        }
       }).listen(v, function () {
         console.log('[TunnelServer] Listening ' + this.address().address + ':' + this.address().port);
-      }).on('error', function(e) {
+      }).on('error', function (e) {
         console.log('[TunnelServer] ' + e.message);
         this.close();
       }).on('close', function () {
@@ -69,23 +73,23 @@ function main() {
         v.localAddress = args.shift();
         v.localPort = args.shift();
       }
-        console.log('Connect to tunnel server. Using parameters ' + JSON.stringify(v, null, '  '));
+      console.log('Connect to tunnel server. Using parameters ' + JSON.stringify(v, null, '  '));
 
-        const tunnel = net.connect(v);
+      const tunnel = net.connect(v);
 
-      tunnel._tag = '[Tunnel'+getTimestampShort()+'] ';
+      tunnel._tag = '[Tunnel' + getTimestampShort() + '] ';
 
       init_mux_tunnel(tunnel, TUNNEL_CLIENT);
 
       tunnelMap[tunnel._tag] = tunnel;
 
+      while (args.length > 0) {
+        run_tunnel_action(tunnel, args);
+      }
+
       break;
     default:
       show_usage();
-  }
-
-  while(args.length> 0) {
-
   }
 }
 
@@ -100,9 +104,10 @@ function run_tunnel_action(tunnel, args) {
         toPort: args.shift()
       };
       console.log('Create port forwarder via tunnel. Using parameters ' + JSON.stringify(v, null, '  '));
-        create_forwarder_listener(tunnel, v.fromAddress, v.fromPort, v.toAddress, v.toPort);
+      create_forwarder_listener(tunnel, v.fromAddress, v.fromPort, v.toAddress, v.toPort);
       break;
     case 'reverse':
+    case 'r-forward':
       v = {
         fromAddress: args.shift(),
         fromPort: args.shift(),
@@ -111,6 +116,22 @@ function run_tunnel_action(tunnel, args) {
       };
       console.log('Create port reverser via tunnel. Using parameters ' + JSON.stringify(v, null, '  '));
       tunnel.write(`\treverse\t${v.fromAddress}\t${v.fromPort}\t${v.toAddress}\t${v.toPort}\n`);
+      break;
+    case 'close':
+      v = {
+        listenerAddress: args.shift(),
+        listenerPort: args.shift()
+      };
+      console.log('Close port forwarder. Using parameters ' + JSON.stringify(v, null, '  '));
+      close_forwarder(tunnel, v.listenerAddress, v.listenerPort);
+      break;
+    case 'r-close':
+      v = {
+        listenerAddress: args.shift(),
+        listenerPort: args.shift()
+      };
+      console.log('Close port reverser. Using parameters ' + JSON.stringify(v, null, '  '));
+      tunnel.write(`\tclose\t${v.listenerAddress}\t${v.listenerPort}\n`);
       break;
     default:
       show_usage_tunnel_action();
@@ -255,7 +276,7 @@ function init_mux_tunnel(tunnel, side) {
         tunnel._streamMap = {};
       }
       for (let forwarderId in tunnel._listenerMap) {
-        tunnel._listenerMap[forwarderId].listener.close();
+        tunnel._listenerMap[forwarderId].server.close();
         tunnel._listenerMap = {};
       }
       tunnel._targetMap = {};
@@ -263,7 +284,7 @@ function init_mux_tunnel(tunnel, side) {
       process.exit(0);
     }
   }).on('error', e => {
-    console.log(tunnel._tag + + e.message);
+    console.log(tunnel._tag + +e.message);
   });
 }
 
@@ -281,9 +302,9 @@ function create_forwarder_listener(tunnel, fromAddress, fromPort, toAddress, toP
     pipe_stream_to_tunnel(realStream, streamId, tunnel);
 
   }).listen({host: fromAddress, port: fromPort}, function () {
-    console.log('[ForwarderListener] Listening TCP ' + this.address().port + ' of ' + this.address().address);
+    console.log('[ForwarderListener] Listening' + this.address().address + ':' + this.address().port);
     tunnel._listenerMap[forwarderId] = {
-      listener: this,
+      server: this,
       address: fromAddress,
       port: fromPort,
       peer: {
@@ -299,10 +320,21 @@ function create_forwarder_listener(tunnel, fromAddress, fromPort, toAddress, toP
       delete tunnel._listenerMap[forwarderId];
       tunnel.write(`${forwarderId}\t-\n`);
     }
-  }).on('error', function(e) {
+  }).on('error', function (e) {
     console.log('[ForwarderListener] ' + e.message);
     this.close();
   });
+}
+
+function close_forwarder(tunnel, listenerAddress, listenerPort) {
+  for (let forwarderId in tunnel._listenerMap) {
+    var listener = tunnel[forwarderId];
+    if (listener.address === listenerAddress && listener.port === listenerPort ||
+      listener.server.address().address === listenerAddress && listener.server.address().port === listenerPort) {
+      console.log(tunnel._tag + 'Close forwarder ' + listenerAddress + ':' + listenerPort);
+      listener.server.close();
+    }
+  }
 }
 
 function pipe_stream_to_tunnel(realStream, streamId, tunnel) {
@@ -341,8 +373,6 @@ function getTimestampShort() {
 function pad234(d, len/*2~4*/) {
   return len === 2 ? ((d < 10) ? '0' + d : d.toString()) : len === 3 ? ((d < 10) ? '00' + d : (d < 100) ? '0' + d : d.toString()) : len === 4 ? ((d < 10) ? '000' + d : (d < 100) ? '00' + d : (d < 1000) ? '0' + d : d.toString()) : d;
 }
-
-
 
 
 main();
