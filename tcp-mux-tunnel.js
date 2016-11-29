@@ -4,11 +4,12 @@
 const net = require("net");
 
 function show_usage() {
-  console.log('Create a single connection as mux tunnel, so you can pipe multiple connections between local and remotes, even in a restricted network.');
-  console.log('Usage:');
+  console.log('Create a tunnel for port forwarding/reversing.');
+  console.log('Usage of Tunnel Server:');
   console.log(' tcp-mux-tunnel.js listen  <host port>');
+  console.log('Usage of Tunnel Client:');
   console.log(' tcp-mux-tunnel.js connect <host port> [from <host port>] [tunnelAction]...');
-  console.log('The above command will read Tunnel Actions from the rest command line and standard input.');
+  console.log('Note: Tunnel Client will also read Tunnel Actions from standard input.');
   show_usage_tunnel_action();
   process.exit(1);
 }
@@ -20,7 +21,7 @@ function show_usage_tunnel_action() {
   console.log('  close     <host port>');
   console.log('  r-close <r_host port>');
   console.log('Notes:');
-  console.log(' The "r-" prefix means the host and port is in sense of the tunnel peer.');
+  console.log(' The "r-" prefix means the host and port is in sense of the Tunnel Server.');
 }
 
 let isTunnelServer;
@@ -50,11 +51,9 @@ function main() {
 
       }).listen(v, function () {
         console.log('[TunnelServer] Listening ' + this.address().address + ':' + this.address().port);
-      }).on('close', function () {
-        console.log('[TunnelServer] closed')
       }).on('error', function (e) {
         console.log('[TunnelServer] ' + e.message);
-        this.close();
+        process.exit(1);
       });
       break;
     case 'connect':
@@ -68,6 +67,9 @@ function main() {
         v.localPort = args.shift();
       }
       console.log('Connect to tunnel server ' + JSON.stringify(v, null, '  '));
+      if (v.localAddress === '*') {
+        delete v.localAddress;
+      }
 
       const tunnel = net.connect(v);
 
@@ -93,7 +95,6 @@ function main() {
 }
 
 function run_tunnel_action(tunnel, args) {
-  let v;
   switch (args.shift()) {
     case 'forward':
       create_forwarder_listener(tunnel, args.shift(), args.shift(), args.shift(), args.shift());
@@ -103,22 +104,10 @@ function run_tunnel_action(tunnel, args) {
       break;
     case 'reverse':
     case 'r-forward':
-      v = {
-        fromAddress: args.shift(),
-        fromPort: args.shift(),
-        toAddress: args.shift(),
-        toPort: args.shift()
-      };
-      console.log('Request peer to create port forwarder. Using parameters ' + JSON.stringify(v, null, '  '));
-      tunnel.write(`\tforward\t${v.fromAddress}\t${v.fromPort}\t${v.toAddress}\t${v.toPort}\n`);
+      tunnel.write(`\tforward\t${args.shift()}\t${args.shift()}\t${args.shift()}\t${args.shift()}\n`);
       break;
     case 'r-close':
-      v = {
-        listenerAddress: args.shift(),
-        listenerPort: args.shift()
-      };
-      console.log('Request peer to close port forwarder. Using parameters ' + JSON.stringify(v, null, '  '));
-      tunnel.write(`\tclose\t${v.listenerAddress}\t${v.listenerPort}\n`);
+      tunnel.write(`\tclose\t${args.shift()}\t${args.shift()}\n`);
       break;
     default:
       show_usage_tunnel_action();
