@@ -8,7 +8,7 @@ function show_usage() {
   console.log('Usage of Tunnel Server:');
   console.log(' tcp-mux-tunnel.js listen  <host port>');
   console.log('Usage of Tunnel Client:');
-  console.log(' tcp-mux-tunnel.js connect <host port> [from <host port>] [tunnelAction]...');
+  console.log(' tcp-mux-tunnel.js connect <host port> [via <host port>] [tunnelAction]...');
   console.log('Note: Tunnel Client will also read Tunnel Actions from standard input.');
   show_usage_tunnel_action();
   process.exit(1);
@@ -16,10 +16,10 @@ function show_usage() {
 
 function show_usage_tunnel_action() {
   console.log('The Tunnel Actions are:');
-  console.log('  forward   <host port>  <r_host port>');
-  console.log('  reverse <r_host port>    <host port>');
+  console.log('  forward   <host port> to <r-host port> [via <r-host port>]');
+  console.log('  reverse <r-host port> to   <host port> [via   <host port>]');
   console.log('  close     <host port>');
-  console.log('  r-close <r_host port>');
+  console.log('  r-close <r-host port>');
   console.log('Notes:');
   console.log(' The "r-" prefix means the host and port is in sense of the Tunnel Server.');
 }
@@ -61,7 +61,7 @@ function main() {
         host: args.shift(),
         port: args.shift(),
       };
-      if (args[0] === 'from') {
+      if (args[0] === 'via') {
         args.shift();
         v.localAddress = args.shift();
         v.localPort = args.shift();
@@ -97,7 +97,7 @@ function main() {
 function run_tunnel_action(tunnel, args) {
   switch (args.shift()) {
     case 'forward':
-      create_forwarder_listener(tunnel, args.shift(), args.shift(), args.shift(), args.shift());
+      create_forwarder_listener(tunnel, args.shift(), args.shift(), (args.shift(),args.shift()), args.shift(), );
       break;
     case 'close':
       close_forwarder_listener(tunnel, args.shift(), args.shift());
