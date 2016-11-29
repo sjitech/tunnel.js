@@ -8,16 +8,16 @@ function show_usage() {
   console.log('Usage of Tunnel Server:');
   console.log(' tcp-mux-tunnel.js listen  <host port>');
   console.log('Usage of Tunnel Client:');
-  console.log(' tcp-mux-tunnel.js connect <host port> [via <host port>] [tunnelAction]...');
-  console.log('Note: Tunnel Client will also read Tunnel Actions from standard input.');
+  console.log(' tcp-mux-tunnel.js connect <host port> [via <host [port]>] [tunnelActions...]');
   show_usage_tunnel_action();
   process.exit(1);
 }
 
 function show_usage_tunnel_action() {
+  console.log('Tunnel Client will also read Tunnel Actions from standard input.');
   console.log('The Tunnel Actions are:');
-  console.log('  forward   <host port> to <r-host port> [via <r-host port>]');
-  console.log('  reverse <r-host port> to   <host port> [via   <host port>]');
+  console.log('  forward   <host port> to <r-host port> [via <r-host [port]>]');
+  console.log('  reverse <r-host port> to   <host port> [via   <host [port]>]');
   console.log('  close     <host port>');
   console.log('  r-close <r-host port>');
   console.log('Notes:');
@@ -33,7 +33,10 @@ function main() {
 
   switch (args.shift()) {
     case 'listen':
-      isTunnelServer = true;
+      if (args.length !== 2) {
+        show_usage();
+        break;
+      }
       v = {
         host: args.shift(),
         port: args.shift()
@@ -43,6 +46,7 @@ function main() {
         delete v.host;
       }
 
+      isTunnelServer = true;
       net.createServer({allowHalfOpen: false}, function (tunnel) {
         let tag = '[Tunnel:' + tunnel.remoteAddress + ':' + tunnel.remotePort + '] ';
         console.log(tag + 'Connected');
@@ -57,6 +61,10 @@ function main() {
       });
       break;
     case 'connect':
+      if (args.length < 2) {
+        show_usage();
+        break;
+      }
       v = {
         host: args.shift(),
         port: args.shift(),
@@ -75,19 +83,25 @@ function main() {
 
       init_mux_tunnel(tunnel, '[Tunnel] ');
 
-      while (args.length) {
-        run_tunnel_action(tunnel, args);
+      if (args.length) {
+        do {
+          if (!run_tunnel_action(tunnel, args)) {
+            show_usage_tunnel_action();
+            break;
+          }
+        } while (args.length);
+      } else {
+        show_usage_tunnel_action();
       }
 
       require('readline').createInterface({
         input: process.stdin
       }).on('line', function (line) {
         args = line.trim().split(/\s+/);
-        while (args.length) {
-          run_tunnel_action(tunnel, args);
+        if (args.length && !run_tunnel_action(tunnel, args)) {
+          console.log('Invalid tunnel action. To see help, input ?');
         }
       });
-
       break;
     default:
       show_usage();
@@ -95,22 +109,49 @@ function main() {
 }
 
 function run_tunnel_action(tunnel, args) {
-  switch (args.shift()) {
+  let _a = [];
+  let action = args.shift();
+  switch (action) {
     case 'forward':
-      create_forwarder_listener(tunnel, args.shift(), args.shift(), (args.shift(),args.shift()), args.shift(), );
-      break;
-    case 'close':
-      close_forwarder_listener(tunnel, args.shift(), args.shift());
-      break;
     case 'reverse':
-    case 'r-forward':
-      tunnel.write(`\tforward\t${args.shift()}\t${args.shift()}\t${args.shift()}\t${args.shift()}\n`);
-      break;
-    case 'r-close':
-      tunnel.write(`\tclose\t${args.shift()}\t${args.shift()}\n`);
-      break;
-    default:
+      if (args.length >= 5 && args[3] === 'to') {
+        _a.push(args.shift(), args.shift());
+        args.shift();
+        _a.push(args.shift(), args.shift());
+        if (!args.length || args[0] === 'via' && args.length >= 2) {
+          if (!args.length) {
+            _a.push('', '');
+          } else {
+            args.shift();
+            _a.push(args.shift(), args.shift() || '');
+          }
+          if (action === 'forward') {
+            create_forwarder_listener(tunnel, _a[0], _a[1], _a[2], _a[3], _a[4], _a[5]);
+          } else {
+            tunnel.write(`\tforward\t${_a[0]}\t${_a[1]}\t${_a[2]}\t${_a[3]}\t${_a[4]}\t${_a[5]}\n`);
+          }
+          return true;
+        }
+      }
+      return false;
+    case 'close':
+    case  'r-close':
+      if (args.length >= 2) {
+        _a.push(args.shift(), args.shift());
+        if (action === 'close') {
+          close_forwarder_listener(tunnel, _a[0], _a[1]);
+        } else {
+          tunnel.write(`\tclose\t${_a[0]}\t${_a[1]}\n`);
+        }
+        return true;
+      }
+      return false;
+    case '?':
+    case 'help':
       show_usage_tunnel_action();
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -196,12 +237,14 @@ function handle_tunnel_event(tunnel, args) {
       switch (eventName) {
         case '+': //on listening
           tunnel._targetMap[forwarderId] = {
-            peer: {
-              address: args.shift(), //just as info
-              port: args.shift(), //just as info
+            peer: { //just as info
+              address: args.shift(),
+              port: args.shift()
             },
             toAddress: args.shift(),
-            toPort: args.shift()
+            toPort: args.shift(),
+            localAddress: args.shift(),
+            localPort: args.shift()
           };
           break;
         case '-': //on close
@@ -216,9 +259,12 @@ function handle_tunnel_event(tunnel, args) {
       switch (eventName) {
         case '+':  //on connect
           try {
+            let target = tunnel._targetMap[forwarderId];
             realStream = net.connect({
-              host: tunnel._targetMap[forwarderId].toAddress,
-              port: tunnel._targetMap[forwarderId].toPort
+              host: target.toAddress,
+              port: target.toPort,
+              localAddress: target.localAddress,
+              localPort: target.localPort
             });
 
             tunnel._streamMap[streamId] = realStream;
@@ -260,7 +306,7 @@ function handle_tunnel_event(tunnel, args) {
   } else { //internal commands
     switch (eventName) {
       case 'forward':
-        create_forwarder_listener(tunnel, args.shift(), args.shift(), args.shift(), args.shift());
+        create_forwarder_listener(tunnel, args.shift(), args.shift(), args.shift(), args.shift(), args.shift(), args.shift());
         break;
       case 'close':
         close_forwarder_listener(tunnel, args.shift(), args.shift());
@@ -279,9 +325,16 @@ function handle_tunnel_event(tunnel, args) {
 
 let lastForwarderId = 0;
 
-function create_forwarder_listener(tunnel, fromAddress, fromPort, toAddress, toPort) {
+function create_forwarder_listener(tunnel, listenerAddress, listenerPort, toAddress, toPort, viaAddress, viaPort) {
   console.log((isTunnelServer ? ('[Tunnel:' + tunnel.remoteAddress + ':' + tunnel.remotePort + '] ') : '' )
-    + 'Create port forwarder ' + JSON.stringify({fromAddress, fromPort, toAddress, toPort}, null, '  '));
+    + 'Create port forwarder ' + JSON.stringify({
+      listenerAddress,
+      listenerPort,
+      toAddress,
+      toPort,
+      viaAddress,
+      viaPort
+    }, null, '  '));
   const forwarderId = (isTunnelServer ? 'S' : 's') + (++lastForwarderId).toString(16);
   let streamIdMax = 0;
 
@@ -295,18 +348,20 @@ function create_forwarder_listener(tunnel, fromAddress, fromPort, toAddress, toP
 
       pipe_stream_to_tunnel(realStream, streamId, tunnel);
 
-    }).listen({host: fromAddress === '*' ? undefined : fromAddress, port: fromPort}, function () {
+    }).listen({host: listenerAddress === '*' ? undefined : listenerAddress, port: listenerPort}, function () {
       console.log('[Forwarder:' + forwarderId + '] Listening' + this.address().address + ':' + this.address().port);
       tunnel._listenerMap[forwarderId] = {
         server: this,
-        address: fromAddress,
-        port: fromPort,
-        peer: {
+        address: listenerAddress,
+        port: listenerPort,
+        peer: { //just as info
           toAddress: toAddress,
-          toPort: toPort
+          toPort: toPort,
+          localAddress: viaAddress,
+          localPort: viaPort
         }
       };
-      tunnel.write(`${forwarderId}\t+\t${fromAddress}\t${fromPort}\t${toAddress}\t${toPort}\n`);
+      tunnel.write(`${forwarderId}\t+\t${listenerAddress}\t${listenerPort}\t${toAddress}\t${toPort}\t${viaAddress || ''}\t${viaPort || ''}\n`);
 
     }).on('close', function () {
       console.log('[Forwarder:' + forwarderId + '] Closed');
