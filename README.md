@@ -15,18 +15,22 @@ TODO:
 
 - Tunnel Server
 ```
-tunnel.js listen [localAddress:]port
+tunnel-listen.js [localAddress:]port
 ```
 - Tunnel Client
 ```
-tunnel.js connect [host:]port [-source [localAddress:]port] ...
+tunnel-connect.js [host:]port [-source [localAddress:]port] ...
 ```
-The Tunnel Client will read instructions from arguments and standard input.
+You can input instructions from arguments or standard input:
 ```
 forward [localAddress:]port [destHOST:]PORT
 reverse [localADDRESS:]PORT [destHost:]port
-end-forward [localAddress:]port
-end-reverse [localADDRESS:]PORT
+```
+You can input instructions from arguments or standard input:
+```
+end-forward [[localAddress:]port]
+end-reverse [[localADDRESS:]PORT]
+list
 ```
 - Notes:
     - Uppercase args just means they are in sense of the tunnel server.
@@ -43,11 +47,11 @@ On HOST_FOR_INNER, you want to connect to SOMEWHERE_OUTSIDE:8888 via a local por
 which will be forwarded to the target. You can do it by following steps:
 - on HOST_FOR_OUTER: Run a tunnel server
 ```
-tunnel.js listen 2222
+tunnel-listen.js 2222
 ```
 - on HOST_FOR_INNER: Connect to the tunnel server and instruct it to create a port forwarder
 ```
-tunnel.js connect HOST_FOR_OUTER:2222 -source HOST_FOR_INNER:1111 \
+tunnel-connect.js HOST_FOR_OUTER:2222 -source HOST_FOR_INNER:1111 \
  forward 9999 SOMEWHERE_OUTSIDE:8888
 ```
 
@@ -56,6 +60,6 @@ On HOST_FOR_OUTER, you want to connect to SOMEWHERE_INSIDE:8888 via a local port
 which will be forwarded to the target. You can just change the above forward command to reverse as following:
 - on HOST_FOR_INNER: Connect to the tunnel server and instruct HOST_FOR_OUTER to create a port forwarder 
 ```
-tunnel.js connect HOST_FOR_OUTER:2222 -source HOST_FOR_INNER:1111 \
+tunnel-connect.js HOST_FOR_OUTER:2222 -source HOST_FOR_INNER:1111 \
  reverse 9999 SOMEWHERE_INSIDE:8888
 ```

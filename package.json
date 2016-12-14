@@ -1,8 +1,9 @@
 {
   "name": "tunnel.js",
-  "version": "1.0.7",
+  "version": "1.0.11",
   "description": "Create a tunnel for port forwarding/reversing in most restricted network",
-  "bin": {"tunnel.js": "./tunnel.js"},
+  "main": "tunnel.js",
+  "bin": {"tunnel-listen.js": "./tunnel-listen.js", "tunnel-connect.js": "./tunnel-connect.js"},
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
