@@ -2,10 +2,11 @@
 'use strict';
 const net = require('net');
 console.log = console.error;
-const tunnelUtil = require('./tunnel.js');
+const split_host_port = require('./lib/split_host_port.js');
+const tunnelUtil = require('./lib/tunnel.js');
 
 function show_usage() {
-  console.log('Create a tunnel server for port forwarding/reversing.');
+  console.log('Create a TCP tunnel server for TCP port forwarding/reversing.');
   console.log('Usage:');
   console.log('  tunnel-listen.js [localAddress:]port');
   console.log('Note:');
@@ -28,11 +29,6 @@ function main(args) {
   }).listen({host: localAddress, port: localPort}, function () {
     console.log(`Listening at [${this.address().address}]:${this.address().port}`);
   }).on('error', e => console.log('' + e));
-}
-
-function split_host_port(combo) {
-  let m = combo.match(/^(\d+)$|^\[([^\]]*)\]:?(.*)$|^([^:]*):([^:]*)$|^(.*)$/);
-  return [(m[2] || m[4] || m[6] || '').replace(/^\*$/, ''), (split_host_port.port_s = (m[1] || m[3] || m[5] || '')) & 0xffff];
 }
 
 main(process.argv.slice(2));  //script args is start from the 3rd.

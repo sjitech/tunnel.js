@@ -1,6 +1,6 @@
 {
   "name": "tunnel.js",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Create a tunnel for port forwarding/reversing in most restricted network",
   "main": "tunnel.js",
   "bin": {"tunnel-listen.js": "./tunnel-listen.js", "tunnel-connect.js": "./tunnel-connect.js"},
