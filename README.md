@@ -10,7 +10,7 @@ TODO:
 - Support forwarding/reversing shell exec.
 - Support authentication.
 
-##Usage
+## Usage
 (you can also install it by `npm install -g tunnel.js`)
 
 - Tunnel Server
@@ -36,7 +36,7 @@ list
     - Uppercase args just means they are in sense of the tunnel server.
     - IPv6 address must be wrapped by square brackets, e.g. [::1]:8080
 
-#Sample
+# Sample
 Assume you have a network consisted of HOST_FOR_INNER and HOST_FOR_OUTER
 - Network rules only allow HOST_FOR_INNER:1111 -> HOST_FOR_OUTER:2222, not reverse
 - only HOST_FOR_OUTER can go to ANYWHERE_OUTSIDE
